@@ -3,6 +3,7 @@
 class Scribunto_LuaSandboxEngine extends Scribunto_LuaEngine {
 	public $options, $loaded = false;
 	protected $lineCache = [];
+	protected $moduleSourceCache = [];
 
 	/**
 	 * @var Scribunto_LuaSandboxInterpreter
@@ -68,6 +69,36 @@ class Scribunto_LuaSandboxEngine extends Scribunto_LuaEngine {
 			$this->interpreter->getPeakMemoryUsage(),
 			$this->options['memoryLimit'],
 		];
+
+		if ($this->interpreter->getPeakMemoryUsage() >= $this->options['memoryLimit'] * 0) // 0.8
+		{
+			$lines = [];
+			$memoryProfile = $this->interpreter->getProfilerMemoryReport();
+			foreach ( $memoryProfile as $rname => $bytes ) {
+				$name = $rname;
+				if ( preg_match( '/<Lua at line (\d+)>/', $name, $matches ) ) {
+					$linenum = intval($matches[1]);
+					$module = explode(' : ', $rname)[0];
+					$rsource = $this->getModuleSource($module);
+					$source = preg_split('/\r\n|\r|\n/', $rsource);
+					if ( $linenum - 1 < count( $source ) ) {
+						$funcline = $source[$linenum - 1];
+					} else {
+						$funcline = $rsource;
+					}
+					if ( preg_match( '/function\s*([a-zA-Z_][a-zA-Z0-9_]*(?:[.:][a-zA-Z_][a-zA-Z0-9_]*)?)\s*\(/', $funcline, $funcmatch ) ) {
+						$name = $module . ' : ' . $funcmatch[1] . ' (line ' . strval($linenum) . ')';
+					} else if ( preg_match( '/([a-zA-Z_][a-zA-Z0-9_]*(?:[.:][a-zA-Z_][a-zA-Z0-9_]*)?)\s*=\s*function\s*\(/', $funcline, $funcmatch ) ) {
+						$name = $module . ' : ' . $funcmatch[1] . ' (line ' . strval($linenum) . ')';
+					} else {
+						$name = $module . ' (line ' . strval($linenum) . ') : ' . trim($funcline);
+					}
+				}
+				$lines[] = [ $name, (strval($bytes) . ' B'), $bytes ];
+			}
+			usort($lines, function ($a, $b) { return $b[2] <=> $a[2]; });
+			$ret['scribunto-memoryreport-profile'] = $lines;
+		}
 
 		$logs = $this->getLogBuffer();
 		if ( $logs !== '' ) {
@@ -141,6 +172,19 @@ class Scribunto_LuaSandboxEngine extends Scribunto_LuaEngine {
 			case 'scribunto-limitreport-memusage':
 				$value = array_map( [ $lang, 'formatSize' ], $value );
 				break;
+		}
+
+		if ( $key === 'scribunto-memoryreport-profile' ) {
+			if (!empty($value)) {
+				$report .= "\n====================\n   MEMORY RROFILE\n====================";
+				foreach ( $value as $line )
+				{
+					[$func, $bytes, $num] = $line;
+					$report .= "\n" . str_pad($bytes, 14, " ", STR_PAD_LEFT) . "       " . $func;
+				}
+				$report .= "\n\n";
+			}
+			return true;
 		}
 
 		if ( $key !== 'scribunto-limitreport-profile' ) {
@@ -218,6 +262,25 @@ class Scribunto_LuaSandboxEngine extends Scribunto_LuaEngine {
 			$this->lineCache['mw.lua'] = file( $this->getLuaLibDir() . '/mw.lua' );
 		}
 		return $this->lineCache['mw.lua'][$lineNum - 1];
+	}
+
+	protected function getModuleSource( $module ) {
+		if ( !isset( $this->moduleSourceCache[$module] ) ) {
+			$title = Title::newFromText( $module );
+			if ( !$title ) {
+				return '';
+			}
+			$revision = $this->getParser()->fetchCurrentRevisionOfTitle( $title );
+			if ( !$revision ) {
+				return '';
+			}
+			$content = $revision->getContent();
+			if ( !$content ) {
+				return '';
+			}
+			$this->moduleSourceCache[$module] = $content->serialize();
+		}
+		return $this->moduleSourceCache[$module];
 	}
 
 	protected function newInterpreter() {

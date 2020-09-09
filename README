@@ -1,0 +1,4 @@
+Branch [memory-profiling]
+Designed to be used with <https://github.com/ziplantil/php-luasandbox/tree/memory-profiling>.
+Adds support for the LuaSandbox simple memory profiler.
+
